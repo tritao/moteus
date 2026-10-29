@@ -419,6 +419,17 @@ class MotorPosition {
     status_.position = value;
     status_.position_raw = static_cast<int64_t>(static_cast<double>(value) * (1ll << 48));
     status_.homed = Status::kOutput;
+    ISR_RefreshAbsoluteRelativeDelta();
+  }
+
+  // The offset between the absolute and relative frames must follow every
+  // change to position_raw at once, not at the next ISR_Update: commands are
+  // converted with it between control cycles, and reference homing inside
+  // ISR_Update moves position_raw after the delta was last computed.
+  void ISR_RefreshAbsoluteRelativeDelta() MOTEUS_CCM_ATTRIBUTE {
+    absolute_relative_delta.store(
+        WrappingSub(status_.position_raw,
+                    status_.position_relative_raw) >> 32);
   }
 
   static float IntToFloat(int64_t value) MOTEUS_CCM_ATTRIBUTE {
@@ -955,9 +966,7 @@ class MotorPosition {
       return;
     }
 
-    absolute_relative_delta.store(
-        WrappingSub(status_.position_raw,
-                    status_.position_relative_raw) >> 32);
+    ISR_RefreshAbsoluteRelativeDelta();
 
     // If we have an output reference source, it is valid, the
     // position is valid, and we haven't had an index home yet, then
@@ -1574,6 +1583,7 @@ class MotorPosition {
     status_.position = IntToFloat(status_.position_raw);
 
     status_.homed = Status::kOutput;
+    ISR_RefreshAbsoluteRelativeDelta();
   }
 
   template <typename Array>
