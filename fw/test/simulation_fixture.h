@@ -645,13 +645,15 @@ class SimulationContext : public BldcServoControl<SimulationContext> {
     mp_status.sources[0].velocity = 0.0f;
     mp_status.sources[0].integral = 0.0f;
 
-    // Set absolute position to 0 (this properly resets position_raw)
-    motor_position_.ISR_SetOutputPosition(0.0f);
-
-    // Also reset the relative position tracking (used by trajectory controller)
+    // Reset the relative position tracking (used by trajectory controller)
+    // first, so the absolute-relative offset that ISR_SetOutputPosition
+    // establishes is computed against it.
     mp_status.position_relative_raw = 0;
     mp_status.position_relative_modulo = 0;
     mp_status.velocity = 0.0f;
+
+    // Set absolute position to 0 (this properly resets position_raw)
+    motor_position_.ISR_SetOutputPosition(0.0f);
 
     status_.pid_d.Clear();
     status_.pid_q.Clear();
@@ -705,8 +707,6 @@ class SimulationContext : public BldcServoControl<SimulationContext> {
                              kEncoderCpr;
     aux1_status_.spi.nonce++;
 
-    // Set the absolute output position (this sets position_raw correctly)
-    motor_position_.ISR_SetOutputPosition(rev);
 
     // Also reset the relative position tracking (used by trajectory controller)
     // The trajectory controller initializes from position_relative_raw, not
@@ -717,6 +717,10 @@ class SimulationContext : public BldcServoControl<SimulationContext> {
     mp_status.position_relative_raw = position_int64;
     mp_status.position_relative_modulo = position_int64;
     mp_status.velocity = 0.0f;
+
+    // Set the absolute output position (this sets position_raw correctly),
+    // after the relative position so the offset between them is current.
+    motor_position_.ISR_SetOutputPosition(rev);
 
     // Update status to match (for modes like fixed_voltage where status
     // is not updated from encoder during stepping)
