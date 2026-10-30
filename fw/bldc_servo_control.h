@@ -1126,13 +1126,20 @@ class BldcServoControl {
             -target_pid_q - pid_q_config_.kp * self().status_.pid_q.error;
       }
 
+      // Bound what the integrators can add to the feedforward, not the
+      // integrators themselves: the integral is the negated PI output,
+      // so the applied voltage stays within +-max_V when it lies within
+      // max_V of the feedforward.  Above the speed where the back-EMF
+      // alone exceeds max_V (field weakening, or zero torque with no
+      // back-EMF feedforward), the q integrator must hold more than
+      // max_V while the applied voltage is still within it.
       self().status_.pid_d.integral = Limit(
           self().status_.pid_d.integral,
-          -max_V, max_V);
+          d_feedforward - max_V, d_feedforward + max_V);
 
       self().status_.pid_q.integral = Limit(
           self().status_.pid_q.integral,
-          -max_V, max_V);
+          q_feedforward - max_V, q_feedforward + max_V);
 
       self().status_.power_W =
           1.5f * (self().status_.d_A * d_V +
