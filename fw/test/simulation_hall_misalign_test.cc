@@ -291,6 +291,22 @@ BOOST_AUTO_TEST_CASE(SimHallSevereMisalignedLostTrackingUnsticks) {
 
   const float park_pos = ctx.motor_sim_.position_rev();
 
+  // What the recovery does is slew a resting estimate to the centre of
+  // its hall sector.  The rotor parks at 90 degrees electrical, the
+  // centre of the narrow sector, so the estimate must now be within 5
+  // degrees of it; without the recovery it stays about 30 degrees
+  // off.  The motion check below does not show this on its own: 30 A
+  // at 30 degrees still turns the rotor.
+  const float park_err_deg =
+      WrapNegPiToPi(ctx.position_.electrical_theta -
+                    ctx.motor_sim_.theta_electrical()) * 180.0f / kPi;
+  fmt::print(stderr, "LostTrackingUnsticks: parked angle error={:.1f}°\n",
+             park_err_deg);
+  BOOST_CHECK_MESSAGE(
+      std::abs(park_err_deg) < 5.0f,
+      "Resting estimate not slewed to the sector centre: "
+      << park_err_deg << "° off");
+
   // 3. Apply a steady forward torque command via current mode.
   //    Commanded torque (0.65 Nm) > load (0.30 Nm) by enough margin
   //    that any commutation angle error below 60° still produces
