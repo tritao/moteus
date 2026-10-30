@@ -342,9 +342,16 @@ class MotorPosition {
     //////////////////////////////
     /// ROTOR REFERENCED POSITIONS
 
-    // The current electrical phase for commutation.
+    // The electrical phase for commutation.  The filter predicts it one
+    // control period ahead, which suits the voltage this cycle
+    // computes, since that is applied over the period that follows.
     bool theta_valid = false;
     float electrical_theta = 0.0f;
+
+    // The electrical phase when this cycle's sensors were sampled, one
+    // period of motion behind electrical_theta.  This is the frame to
+    // transform this cycle's phase current measurements in.
+    float sampled_electrical_theta = 0.0f;
 
     template <typename Archive>
     void Serialize(Archive* a) {
@@ -362,6 +369,7 @@ class MotorPosition {
       a->Visit(MJ_NVP(velocity));
       a->Visit(MJ_NVP(theta_valid));
       a->Visit(MJ_NVP(electrical_theta));
+      a->Visit(MJ_NVP(sampled_electrical_theta));
     }
   };
 
@@ -866,6 +874,15 @@ class MotorPosition {
       status_.electrical_theta = WrapZeroToTwoPi(
           ratio * commutation_pole_scale_ / commutation_rotor_scale_ +
           lerp(motor_.offset, 1.0f, ratio));
+
+      // The filter's estimate before it stepped forward a period.
+      const float sampled_ratio =
+          WrapCpr(commutation_status.filtered_value -
+                  dt_ * commutation_status.velocity,
+                  commutation_config.cpr) / commutation_config.cpr;
+      status_.sampled_electrical_theta = WrapZeroToTwoPi(
+          sampled_ratio * commutation_pole_scale_ / commutation_rotor_scale_ +
+          lerp(motor_.offset, 1.0f, sampled_ratio));
     }
   }
 

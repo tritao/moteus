@@ -620,7 +620,7 @@ BOOST_AUTO_TEST_CASE(SimFieldWeakeningPowerLimit) {
     auto cmd = SetupFieldWeakeningAtSpeed(ctx, 100.0f, 14.0f, 1.0f);
     ctx.RunSimulation(&cmd, 0.1f);
 
-    const float baseline_power = std::abs(ctx.status_.power_W);
+    const float baseline_power = std::abs(ctx.motor_sim_.input_power_W());
     const float baseline_vel = ctx.motor_sim_.velocity_rev_s();
 
     const float power_limit = baseline_power * 0.5f;
@@ -632,7 +632,7 @@ BOOST_AUTO_TEST_CASE(SimFieldWeakeningPowerLimit) {
     const int sample_steps = 3000;
     for (int i = 0; i < sample_steps; i++) {
       ctx.StepSimulation(&cmd);
-      sum_power += std::abs(ctx.status_.power_W);
+      sum_power += std::abs(ctx.motor_sim_.input_power_W());
       if (ctx.status_.fault == errc::kLimitMaxPower) limit_count++;
     }
     const float avg_power = sum_power / sample_steps;
@@ -659,10 +659,13 @@ BOOST_AUTO_TEST_CASE(SimFieldWeakeningPowerLimit) {
 
   // --- Operating point 2: 24V/120Hz with load, speed above base ---
   //
-  // At 24V commanding 120 rev/s the motor saturates at ~105 (base ~82)
-  // with max FW.  A load torque ensures the motor draws significant
-  // q-axis power.  A moderate power limit forces the motor to slow
-  // but remain above base speed.
+  // At 24V commanding 120 rev/s the motor runs above base speed with
+  // FW.  A load torque ensures the motor draws significant q-axis
+  // power.  Halving the power forces the motor to slow to where the
+  // load, the drag and the copper losses take the power allowed.
+  // With this load that is just below base speed: there the FW
+  // current is gone, and the load alone takes more than half of what
+  // it took at the FW speed.
   {
     ctx.motor_sim_.state() = SpmsmMotorSimulator::State{};
     ctx.Reset();
@@ -674,7 +677,7 @@ BOOST_AUTO_TEST_CASE(SimFieldWeakeningPowerLimit) {
     ctx.external_torque_ = -0.15f;
     ctx.RunSimulation(&cmd, 1.0f);
 
-    const float baseline_power = std::abs(ctx.status_.power_W);
+    const float baseline_power = std::abs(ctx.motor_sim_.input_power_W());
     const float baseline_vel = ctx.motor_sim_.velocity_rev_s();
     const float base_speed = ctx.status_.motor_base_velocity;
 
@@ -692,7 +695,7 @@ BOOST_AUTO_TEST_CASE(SimFieldWeakeningPowerLimit) {
     const int sample_steps = 3000;
     for (int i = 0; i < sample_steps; i++) {
       ctx.StepSimulation(&cmd);
-      sum_power += std::abs(ctx.status_.power_W);
+      sum_power += std::abs(ctx.motor_sim_.input_power_W());
       if (ctx.status_.fault == errc::kLimitMaxPower) limit_count++;
     }
     const float avg_power = sum_power / sample_steps;
@@ -715,9 +718,27 @@ BOOST_AUTO_TEST_CASE(SimFieldWeakeningPowerLimit) {
     BOOST_CHECK_MESSAGE(final_vel < baseline_vel * 0.95f,
         "24V: Speed was not reduced: " << final_vel
         << " vs baseline " << baseline_vel);
-    BOOST_CHECK_MESSAGE(final_vel > base_speed,
-        "24V: Speed fell below base speed: " << final_vel
+    // The power, measured in the simulator, is held to the limit.
+    BOOST_CHECK_MESSAGE(avg_power < power_limit * 1.05f,
+        "24V: Power " << avg_power << "W exceeds the limit "
+        << power_limit << "W");
+
+    // And the speed is where the power balances: below base speed no
+    // FW current flows, so the power is the load and drag times the
+    // speed plus the q copper loss carrying that torque.
+    BOOST_CHECK_MESSAGE(final_vel < base_speed,
+        "24V: Speed stayed above base speed: " << final_vel
         << " vs base " << base_speed);
+    const auto& mp = ctx.motor_sim_.params();
+    const float omega = std::abs(final_vel) * k2Pi;
+    const float torque = std::abs(ctx.external_torque_) + mp.B * omega;
+    const float q_A = torque / mp.Kt;
+    const float expected_power = torque * omega + 1.5f * mp.R * q_A * q_A;
+    BOOST_CHECK_MESSAGE(
+        std::abs(avg_power - expected_power) < expected_power * 0.05f,
+        "24V: power " << avg_power << "W at " << final_vel
+        << " rev/s, where the load and losses take "
+        << expected_power << "W");
     BOOST_CHECK_MESSAGE(ctx.status_.mode != kFault,
         "24V: Fault mode, fault=" << static_cast<int>(ctx.status_.fault));
   }

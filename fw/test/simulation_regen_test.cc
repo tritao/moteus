@@ -133,11 +133,13 @@ BOOST_AUTO_TEST_CASE(SimRegenOverVoltage) {
 // Runs the motor at constant velocity with an external torque that
 // assists rotation, creating a sustained regenerative operating
 // point where the regen power significantly exceeds the limit.
-// Verifies that the reported electrical power stays near the limit.
+// Verifies that the electrical power the motor delivers (measured in
+// the simulator, not the controller's own estimate) stays near the
+// limit.
 //
-// The reported power_W is slightly less negative than the limit
-// because q-axis copper losses (1.5 * R * i_q²) offset some of
-// the mechanical regen power before it reaches the bus.
+// It is slightly less negative than the limit because q-axis copper
+// losses (1.5 * R * i_q²) offset some of the mechanical regen power
+// before it reaches the bus.
 BOOST_AUTO_TEST_CASE(SimRegenPowerLimitSteadyState) {
   struct TestCase {
     float velocity;
@@ -183,7 +185,7 @@ BOOST_AUTO_TEST_CASE(SimRegenPowerLimitSteadyState) {
 
     // Measure steady-state power and d-axis current over 0.5s.
     const auto power_stats = ctx.SampleValue(&cmd, 15000, [&] {
-      return ctx.status_.power_W;
+      return ctx.motor_sim_.input_power_W();
     });
 
     const auto d_stats = ctx.SampleValue(&cmd, 15000, [&] {
@@ -244,8 +246,8 @@ BOOST_AUTO_TEST_CASE(SimRegenPowerLimitSaturated) {
 
   // P_mech ≈ 0.5 * 60 * 2π ≈ 188.5W
   // Max d-axis dissipation: 1.5 * 40² * 0.047 = 112.8W
-  // Expected net regen: P_mech - P_d_max ≈ 75.7W (before q copper
-  // losses, which reduce this further).
+  // Expected net regen: P_mech - P_d_max ≈ 75.7W before the q copper
+  // losses and the viscous drag, which reduce it further.
   auto cmd = MakePositionCommand(kNaN, velocity, 5.0f);
   cmd.accel_limit = 100.0f;
   ctx.Command(&cmd);
@@ -257,18 +259,25 @@ BOOST_AUTO_TEST_CASE(SimRegenPowerLimitSaturated) {
   BOOST_REQUIRE(ctx.status_.mode != kFault);
 
   const auto power_stats = ctx.SampleValue(&cmd, 15000, [&] {
-    return ctx.status_.power_W;
+    return ctx.motor_sim_.input_power_W();
   });
 
   const auto d_stats = ctx.SampleValue(&cmd, 15000, [&] {
     return ctx.control_.i_d_A;
   });
 
-  // At this operating point the d-axis is saturated at max_current_A.
-  // The net bus power (-31.6W) is determined by the mechanical regen
-  // power minus d-axis and q-axis copper losses, including
-  // cross-coupling voltage effects between the d and q axes.
-  const float expected_power = -31.6f;
+  // At this operating point the d-axis is saturated at max_current_A,
+  // so the electrical power out is the mechanical power the rotor
+  // delivers less the copper losses at that d current and the q
+  // current carrying the torque.  At constant speed the motor torque
+  // balances the load less the viscous drag.
+  const auto& mp = ctx.motor_sim_.params();
+  const float omega = velocity * k2Pi;
+  const float torque_em = ext_torque - mp.B * omega;
+  const float q_A = torque_em / mp.Kt;
+  const float d_A = ctx.config_.max_current_A;
+  const float expected_power =
+      -(torque_em * omega - 1.5f * mp.R * (d_A * d_A + q_A * q_A));
 
   std::cout << "RegenSaturated: power=" << power_stats.mean
             << "±" << power_stats.std_dev
@@ -281,12 +290,12 @@ BOOST_AUTO_TEST_CASE(SimRegenPowerLimitSaturated) {
       "d_A should be near max_current (" << ctx.config_.max_current_A
       << "), got " << d_stats.mean);
 
-  // Regen power should be within 25% of the expected value.
+  // Regen power should be within 5% of the expected value.
   BOOST_CHECK_MESSAGE(
       std::abs(power_stats.mean - expected_power) <
-          std::abs(expected_power) * 0.25f,
+          std::abs(expected_power) * 0.05f,
       "Saturated regen power " << power_stats.mean
-      << "W deviates >25% from expected " << expected_power << "W");
+      << "W deviates >5% from expected " << expected_power << "W");
 }
 
 // Regen power limiting with a non-unity rotor_to_output_ratio.
@@ -314,7 +323,7 @@ BOOST_AUTO_TEST_CASE(SimRegenPowerLimitWithGearRatio) {
   BOOST_REQUIRE(ctx.status_.mode != kFault);
 
   const auto ref_power = ctx.SampleValue(&cmd, 15000, [&] {
-    return ctx.status_.power_W;
+    return ctx.motor_sim_.input_power_W();
   });
   const auto ref_d = ctx.SampleValue(&cmd, 15000, [&] {
     return ctx.control_.i_d_A;
@@ -346,7 +355,7 @@ BOOST_AUTO_TEST_CASE(SimRegenPowerLimitWithGearRatio) {
       "Geared case faulted: " << static_cast<int>(ctx.status_.fault));
 
   const auto gear_power = ctx.SampleValue(&cmd, 15000, [&] {
-    return ctx.status_.power_W;
+    return ctx.motor_sim_.input_power_W();
   });
   const auto gear_d = ctx.SampleValue(&cmd, 15000, [&] {
     return ctx.control_.i_d_A;
@@ -367,7 +376,7 @@ BOOST_AUTO_TEST_CASE(SimRegenPowerLimitWithGearRatio) {
       "d_A mismatch: ratio=1 got " << ref_d.mean
       << ", ratio=0.5 got " << gear_d.mean);
 
-  // Reported bus power should be similar.
+  // The electrical power should be similar.
   BOOST_CHECK_MESSAGE(
       std::abs(ref_power.mean - gear_power.mean) < 5.0f,
       "power mismatch: ratio=1 got " << ref_power.mean

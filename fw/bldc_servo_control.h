@@ -534,8 +534,15 @@ class BldcServoControl {
     self().status_.sin = sin_cos.s;
     self().status_.cos = sin_cos.c;
 
-    // DQ transform from phase currents.
-    DqTransform dq{sin_cos, cur_a, cur_b, cur_c};
+    // DQ transform from phase currents, in the frame they were sampled
+    // in.  The electrical theta above is predicted a period ahead for
+    // the output; at speed, transforming the measurements with it would
+    // rotate some d current into q.
+    const SinCos sampled_sin_cos =
+        !use_synthetic_theta ?
+        self().cordic(RadiansToQ31(self().position_.sampled_electrical_theta)) :
+        sin_cos;
+    DqTransform dq{sampled_sin_cos, cur_a, cur_b, cur_c};
     self().status_.d_A = dq.d;
     self().status_.q_A = self().motor_position_config()->output.sign * dq.q;
 

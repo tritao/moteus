@@ -96,9 +96,11 @@ class SpmsmMotorSimulator {
     constexpr int kSubSteps = 10;
     const double sub_dt = static_cast<double>(dt) / kSubSteps;
 
+    double power_sum = 0.0;
     for (int i = 0; i < kSubSteps; i++) {
-      StepInternal(sub_dt, v_a, v_b, v_c, T_load);
+      power_sum += StepInternal(sub_dt, v_a, v_b, v_c, T_load);
     }
+    input_power_W_ = static_cast<float>(power_sum / kSubSteps);
   }
 
   // Step the motor simulation with the inverter in high-impedance state
@@ -112,6 +114,9 @@ class SpmsmMotorSimulator {
   void StepHiz(float dt, float T_load = 0.0f) {
     constexpr int kSubSteps = 10;
     const double sub_dt = static_cast<double>(dt) / kSubSteps;
+
+    // No current flows through the open phases, so no power either.
+    input_power_W_ = 0.0f;
 
     for (int i = 0; i < kSubSteps; i++) {
       state_.i_d = 0.0;
@@ -217,6 +222,14 @@ class SpmsmMotorSimulator {
     return static_cast<float>(state_.omega_mechanical / k2Pi_d);
   }
 
+  // The mean electrical power into the motor over the last Step (W),
+  // 1.5 * (v_d * i_d + v_q * i_q) in the motor's own frame each
+  // substep: negative while generating.  This is the power the inverter
+  // actually delivers, whatever the controller's frame or timing, so
+  // tests of power limits measure against it rather than against the
+  // controller's own estimate.
+  float input_power_W() const { return input_power_W_; }
+
   // Electromagnetic torque (Nm), including saturation model.
   float torque_em() const {
     return static_cast<float>(current_to_torque(state_.i_q));
@@ -231,7 +244,9 @@ class SpmsmMotorSimulator {
   const std::shared_ptr<MotorModel>& model() const { return model_; }
 
  private:
-  void StepInternal(double dt, float v_a, float v_b, float v_c, float T_load) {
+  // Returns the electrical power into the motor at the start of the
+  // substep.
+  double StepInternal(double dt, float v_a, float v_b, float v_c, float T_load) {
     // 1. Convert phase voltages (a,b,c) to DQ frame using Clarke+Park.
     const double sin_t = std::sin(state_.theta_electrical);
     const double cos_t = std::cos(state_.theta_electrical);
@@ -258,6 +273,8 @@ class SpmsmMotorSimulator {
     const double L_d = model_->L_d(state_.i_d, state_.i_q);
     const double L_q = model_->L_q(state_.i_d, state_.i_q);
     const double lambda_m = model_->lambda_m();
+
+    const double power_W = 1.5 * (v_d * state_.i_d + v_q * state_.i_q);
 
     const double di_d_dt = (v_d - R * state_.i_d +
                             omega_e * L_q * state_.i_q) / L_d;
@@ -292,6 +309,8 @@ class SpmsmMotorSimulator {
     while (state_.theta_electrical < 0.0) {
       state_.theta_electrical += k2Pi_d;
     }
+
+    return power_W;
   }
 
   static std::shared_ptr<SimpleMotorModel> MakeSimpleModel(const Params& p) {
@@ -321,6 +340,7 @@ class SpmsmMotorSimulator {
   Params params_;
   std::shared_ptr<MotorModel> model_;
   State state_;
+  float input_power_W_ = 0.0f;
 };
 
 }  // namespace test
